@@ -22,6 +22,43 @@ FINGERPRINT_TYPES = [
     "AVALON",
 ]
 
+def basic_dataloader(filepath, x_col, y_col = None, n_to_load = None):
+  pf = pa.parquet.ParquetFile(filepath)
+  # load y
+  if y_col is not None:
+    y = pf.read(columns = ['DELLabel']).to_pandas()
+    y = y.iloc[0:n_to_load][y_col].values
+  else: y = None
+
+  # load X
+  if n_to_load is not None:
+    rows_to_load = next(pf.iter_batches(columns = [x_col, y_col], batch_size = n_to_load))
+    df = pa.Table.from_batches([rows_to_load]).to_pandas()
+  else:
+    df = pf.read(columns = [x_col]).to_pandas()
+
+  # split X strings
+  X = df[x_col].str.split(',', expand=True).astype(int, copy=False).values
+
+  return X, y
+
+
+def parquet_dataloader(filename, x_col, y_col=None, batch_size=1000):
+    pf = pa.parquet.ParquetFile(filename)
+    columns = [x_col] + ([y_col] if y_col is not None else [])
+    for batch in pf.iter_batches(columns=columns, batch_size=batch_size):
+        df = pa.Table.from_batches([batch]).to_pandas()
+        # Use string splitting for X, as in basic_dataloader
+        X = df[x_col].str.split(',', expand=True).astype(float, copy=False).values
+        if y_col is not None:
+            y = df[y_col].values
+        else:
+            y = None
+        yield X, y
+
+    
+
+
 
 @dataclass
 class Dataset:
@@ -128,15 +165,14 @@ def load_x(
     print(f"Total rows: {n_rows}")
     feat_dims = get_feature_dims(parquet_file, x_cols)
     n_dim = sum(feat_dims)
-    chunk_size = 1000
-    n_chunks = n_rows // chunk_size
+    n_chunks = n_rows // batch_size
     print(f"Expected Memory for inputs: {calculate_np_memory((n_rows, n_dim)):.2f} GBs")
     feature_dims = calculate_feature_dims(x_cols, feat_dims)
-    pq_iter = parquet_file.iter_batches(batch_size=chunk_size, columns=None)
+    pq_iter = parquet_file.iter_batches(batch_size=batch_size, columns=None)
     x = np.zeros((n_rows, n_dim), dtype=np.float32)
     for i, record_batch in tqdm(enumerate(pq_iter), total=n_chunks):
-        x_start = i * chunk_size
-        x_end = min((i + 1) * chunk_size, n_rows)
+        x_start = i * batch_size
+        x_end = min((i + 1) * batch_size, n_rows)
         x_slice = slice(x_start, x_end)
         for c in x_cols:
             f_slice = slice(*feature_dims[c])
