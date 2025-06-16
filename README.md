@@ -10,6 +10,10 @@ Visit our kaggle website:
 
 https://www.kaggle.com/competitions/cross-talk-round-2
 
+Kaggle is private, if you have provided your email, you can join via this invitation link:
+
+https://www.kaggle.com/t/9c7fbe5809c84378a7dce33dab4c5cb7
+
 ## Getting Started in the notebooks
 
 <div style="background-color: #f0f4f8; border-left: 5px solid #2962ff; padding: 15px; margin: 20px 0;">
