@@ -21,26 +21,34 @@ FINGERPRINT_TYPES = [
     "RDK",
     "AVALON",
 ]
+INDEX_COL = "RandomID"
+TARGET_COL = "DELLabel"
+FLOAT_COLS = ["MW", "AlogP"]
+FINGERPRINT_COLS = FINGERPRINT_TYPES
 
-def basic_dataloader(filepath, x_col, y_col = None, n_to_load = None):
-  pf = pa.parquet.ParquetFile(filepath)
-  # load y
-  if y_col is not None:
-    y = pf.read(columns = ['DELLabel']).to_pandas()
-    y = y.iloc[0:n_to_load][y_col].values
-  else: y = None
 
-  # load X
-  if n_to_load is not None:
-    rows_to_load = next(pf.iter_batches(columns = [x_col, y_col], batch_size = n_to_load))
-    df = pa.Table.from_batches([rows_to_load]).to_pandas()
-  else:
-    df = pf.read(columns = [x_col]).to_pandas()
+def basic_dataloader(filepath, x_col, y_col=None, n_to_load=None):
+    pf = pa.parquet.ParquetFile(filepath)
+    # load y
+    if y_col is not None:
+        y = pf.read(columns=["DELLabel"]).to_pandas()
+        y = y.iloc[0:n_to_load][y_col].values
+    else:
+        y = None
 
-  # split X strings
-  X = df[x_col].str.split(',', expand=True).astype(int, copy=False).values
+    # load X
+    if n_to_load is not None:
+        rows_to_load = next(
+            pf.iter_batches(columns=[x_col, y_col], batch_size=n_to_load)
+        )
+        df = pa.Table.from_batches([rows_to_load]).to_pandas()
+    else:
+        df = pf.read(columns=[x_col]).to_pandas()
 
-  return X, y
+    # split X strings
+    X = df[x_col].str.split(",", expand=True).astype(int, copy=False).values
+
+    return X, y
 
 
 def parquet_dataloader(filename, x_col, y_col=None, batch_size=1000):
@@ -49,15 +57,12 @@ def parquet_dataloader(filename, x_col, y_col=None, batch_size=1000):
     for batch in pf.iter_batches(columns=columns, batch_size=batch_size):
         df = pa.Table.from_batches([batch]).to_pandas()
         # Use string splitting for X, as in basic_dataloader
-        X = df[x_col].str.split(',', expand=True).astype(float, copy=False).values
+        X = df[x_col].str.split(",", expand=True).astype(float, copy=False).values
         if y_col is not None:
             y = df[y_col].values
         else:
             y = None
         yield X, y
-
-    
-
 
 
 @dataclass
@@ -129,7 +134,11 @@ def get_feature_dims(parquet_file, features: list[str]) -> list[int]:
     first_row = next(parquet_file.iter_batches(batch_size=1)).to_pandas().iloc[0]
     dims = []
     for c in features:
-        dims.append(len(np.array(first_row[c].split(","), dtype=np.float32)))
+        if c in FINGERPRINT_COLS:
+            dims.append(len(np.array(first_row[c].split(","), dtype=np.float32)))
+        elif c in FLOAT_COLS:
+            dims.append(1)
+
     return dims
 
 
@@ -157,7 +166,7 @@ def load_y(filename: str, y_col: str = "DELLabel", batch_size=1000) -> np.ndarra
 
 
 def load_x(
-    filename: str, x_cols: list[str], y_col: str = "DELLabel", batch_size=1000
+    filename: str, x_cols: list[str], return_index=False, batch_size=1000
 ) -> np.ndarray:
     """Loads input features from a Parquet file."""
     parquet_file = pq.ParquetFile(filename)
@@ -165,18 +174,27 @@ def load_x(
     print(f"Total rows: {n_rows}")
     feat_dims = get_feature_dims(parquet_file, x_cols)
     n_dim = sum(feat_dims)
-    n_chunks = n_rows // batch_size
+    n_chunks = n_rows // batch_size + 1
     print(f"Expected Memory for inputs: {calculate_np_memory((n_rows, n_dim)):.2f} GBs")
     feature_dims = calculate_feature_dims(x_cols, feat_dims)
     pq_iter = parquet_file.iter_batches(batch_size=batch_size, columns=None)
     x = np.zeros((n_rows, n_dim), dtype=np.float32)
+    index = []
     for i, record_batch in tqdm(enumerate(pq_iter), total=n_chunks):
         x_start = i * batch_size
         x_end = min((i + 1) * batch_size, n_rows)
         x_slice = slice(x_start, x_end)
+        if return_index:
+            index.extend(record_batch.column(INDEX_COL).tolist())
         for c in x_cols:
             f_slice = slice(*feature_dims[c])
             chunked_arr = record_batch.column(c)
-            values = parse_pyarrow_string_array(chunked_arr)
+            if c in FINGERPRINT_COLS:
+                values = parse_pyarrow_string_array(chunked_arr)
+            else:
+                values = chunked_arr.to_numpy(zero_copy_only=False).reshape(-1, 1)
             x[x_slice, f_slice] = values
-    return x
+    if return_index:
+        return index, x
+    else:
+        return x
